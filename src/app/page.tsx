@@ -65,11 +65,20 @@ let gainNode: GainNode | null = null
 export default function TTSApp() {
   // Core state
   const [text, setText] = useState("");
-  const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState("");
   const [isLoadingVoices, setIsLoadingVoices] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordedAudio, setRecordedAudio] = useState<Blob | null>(null);
+  const [audioURL, setAudioURL] = useState<string | null>(null);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(
+    null
+  );
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Dialog states
   const [isPresetDialogOpen, setIsPresetDialogOpen] = useState(false);
@@ -266,6 +275,7 @@ export default function TTSApp() {
   const generateRandomText = () => {
     const examples = [
       "Welcome to the future of voice technology! This AI-powered text-to-speech system creates remarkably natural voices.",
+      "okay stop look how freaking cool this is that I started doing and I'm doing it like way too often okay so you like do okay I'll show you cuz it's freaking cool okay hi oh okay nice did you just delay your words after you mouth them to someone you're coming up to meet them and they go hi like what do you be like who just did that like like that's odd like hey so fun hey so a lot of people are asking about how I did the lagging voice thing and they want a tutorial and all I can say is like find words that don't make your lips touch like hi and hey um like I'm not that good with ventriloquism I can't do crazy like cool songs like that but if you can go hey and I also promise it's not a voiceover look there's no one else in the room this is my voice you can see my throat move I hope hey yeah hey hey hey I don't know how I was to prove it to you guys but uh yeah literally all you have to do is find words that don't make your lips touch and then just hi hey all the time super fun so yeah that's about it",
       "Imagine a world where every story comes to life through the power of artificial intelligence and natural-sounding voices.",
       "Transform your written words into captivating speech with our cutting-edge text-to-speech technology.",
     ];
@@ -405,34 +415,103 @@ export default function TTSApp() {
     });
   };
 
-  // Handle voice cloning
-  const handleVoiceCloning = async (file: File, name: string) => {
-    const progressInterval: NodeJS.Timeout | null = null;
-  try {
-    setIsCloning(true);
-    setUploadProgress(0);
-
-    // Validate file
-    if (!file.type.includes("audio/") && !file.type.includes("video/mp4")) {
-      throw new Error("Please upload a valid audio or MP4 file");
-    }
-
-    // Validate file size (10MB limit)
-    const maxSize = 10 * 1024 * 1024; // 10MB in bytes
-    if (file.size > maxSize) {
-      throw new Error("File size exceeds 10MB limit");
-    }
-
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("name", name);
-
-    // Start upload progress simulation
-    const progressInterval = setInterval(() => {
-      setUploadProgress((prev) => Math.min(prev + 10, 90));
-    }, 500);
-
+  // Add these functions to handle recording
+  const startRecording = async () => {
     try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: BlobPart[] = [];
+
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: "audio/wav" });
+        const url = URL.createObjectURL(blob);
+        setRecordedAudio(blob);
+        setAudioURL(url);
+        stream.getTracks().forEach((track) => track.stop());
+      };
+
+      setMediaRecorder(recorder);
+      recorder.start();
+      setIsRecording(true);
+      setRecordingDuration(0);
+
+      // Start duration timer
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration((prev) => prev + 1);
+      }, 1000);
+    } catch (error) {
+      console.error("Error accessing microphone:", error);
+      toast({
+        title: "Error",
+        description: "Could not access microphone. Please check permissions.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+    }
+  };
+
+  const handlePlayPause = () => {
+    if (audioRef.current) {
+      if (isPlaying) {
+        audioRef.current.pause();
+      } else {
+        audioRef.current.play();
+      }
+      setIsPlaying(!isPlaying);
+    }
+  };
+
+  const resetRecording = () => {
+    setRecordedAudio(null);
+    setAudioURL(null);
+    setRecordingDuration(0);
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+    setIsPlaying(false);
+  };
+
+  // Update the handleVoiceCloning function to handle both uploaded and recorded audio
+  // Updated handleVoiceCloning function with proper formData construction
+  const handleVoiceCloning = async (fileOrBlob: File | Blob, name: string) => {
+    const progressInterval: NodeJS.Timeout | null = null;
+    try {
+      setIsCloning(true);
+      setUploadProgress(0);
+
+      // Create FormData and append required fields for ElevenLabs API
+      const formData = new FormData();
+
+      // Add name with proper field name
+      formData.append("name", name);
+
+      // Add files array for ElevenLabs API
+      if (fileOrBlob instanceof Blob) {
+        // For recorded audio
+        const audioFile = new File([fileOrBlob], "recorded-audio.wav", {
+          type: "audio/wav",
+        });
+        formData.append("files", audioFile);
+      } else {
+        // For uploaded file
+        formData.append("files", fileOrBlob);
+      }
+
+      // Start upload progress simulation
+      const progressInterval = setInterval(() => {
+        setUploadProgress((prev) => Math.min(prev + 10, 90));
+      }, 500);
+
       const response = await fetch("/api/clone-voice", {
         method: "POST",
         body: formData,
@@ -447,71 +526,137 @@ export default function TTSApp() {
       }
 
       const data = await response.json();
-
-      // Validate the response data
       if (!data.voice_id) {
         throw new Error("Invalid response from voice cloning service");
       }
 
-      // Generate a unique ID if none is provided
-      const voiceId = data.voice_id || `custom-${Date.now()}`;
-
       // Update voices list with new voice
       const newVoice = {
-        voice_id: voiceId,
+        voice_id: data.voice_id,
         name: name,
         category: "custom",
       };
 
       setVoices((prev) => [...prev, newVoice]);
-
-      // Select the new voice
-      setSelectedVoice(voiceId);
-
-      // Log success details for debugging
-      console.log("Voice cloning successful:", {
-        voiceId,
-        name,
-        response: data,
-      });
+      setSelectedVoice(data.voice_id);
 
       toast({
         title: "Success",
         description:
-          "Voice cloned successfully! The new voice is now available in the voice selection dropdown.",
+          "Voice cloned successfully! The new voice is now available.",
       });
 
       setIsVoiceDialogOpen(false);
-    } catch (error) {
-      throw error; // Re-throw to be caught by outer try-catch
+    } catch (error: any) {
+      console.error("Voice cloning error:", error);
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+      setUploadProgress(0);
+      toast({
+        title: "Error",
+        description:
+          error.message || "Failed to clone voice. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCloning(false);
+      setSelectedFile(null);
+      setVoiceName("");
+      setUploadProgress(0);
+      resetRecording();
     }
-  } catch (error: any) {
-    console.error("Voice cloning error:", error);
-
-    // Clear the progress interval if it exists
-  if (progressInterval) {
-    clearInterval(progressInterval);
-  }
-  setUploadProgress(0);
-
-    toast({
-      title: "Error",
-      description: error.message || "Failed to clone voice. Please try again.",
-      variant: "destructive",
-    });
-  } finally {
-    setIsCloning(false);
-    setSelectedFile(null);
-    setVoiceName("");
-    setUploadProgress(0);
-  }
-};
+  };
 
   const handleVoiceChange = (voiceId: string) => {
     console.log("Selected Voice ID:", voiceId);
     console.log("Is Valid Voice ID?", Boolean(voiceId));
     setSelectedVoice(voiceId);
   };
+
+  // Update the Dialog content to include recording functionality
+  const recordingUI = (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-gray-300">
+          Record Voice Sample
+        </h3>
+        {recordedAudio && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={resetRecording}
+            className="text-red-400 hover:text-red-300"
+          >
+            Reset
+          </Button>
+        )}
+      </div>
+
+      <div className="flex flex-col items-center space-y-4 p-4 border border-gray-800/50 rounded-lg bg-gray-950/30">
+        {!recordedAudio ? (
+          <>
+            <Button
+              type="button"
+              onClick={isRecording ? stopRecording : startRecording}
+              className={`w-16 h-16 rounded-full ${
+                isRecording
+                  ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                  : "bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30"
+              }`}
+            >
+              <Mic
+                className={`h-6 w-6 ${isRecording ? "animate-pulse" : ""}`}
+              />
+            </Button>
+            <span className="text-sm text-gray-400">
+              {isRecording
+                ? `Recording: ${recordingDuration}s`
+                : "Click to start recording"}
+            </span>
+          </>
+        ) : (
+          <div className="w-full space-y-3">
+            <audio
+              ref={audioRef}
+              src={audioURL || ""}
+              onEnded={() => setIsPlaying(false)}
+              className="hidden"
+            />
+            <div className="flex items-center justify-center space-x-4">
+              <Button
+                type="button"
+                onClick={handlePlayPause}
+                className="bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300"
+              >
+                {isPlaying ? (
+                  <Square className="h-4 w-4" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
+              </Button>
+              <span className="text-sm text-gray-400">
+                {recordingDuration}s recorded
+              </span>
+            </div>
+            <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+              {audioRef.current && (
+                <div
+                  className="h-full bg-indigo-500/50"
+                  style={{
+                    width: `${
+                      (audioRef.current.currentTime / recordingDuration) * 100
+                    }%`,
+                  }}
+                />
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-800 to-black text-white py-8 ">
@@ -980,6 +1125,7 @@ export default function TTSApp() {
                               clone
                             </p>
                           </div>
+
                           <Dialog
                             open={isVoiceDialogOpen}
                             onOpenChange={setIsVoiceDialogOpen}
@@ -1003,8 +1149,14 @@ export default function TTSApp() {
                               <form
                                 onSubmit={(e) => {
                                   e.preventDefault();
-                                  if (selectedFile && voiceName) {
-                                    handleVoiceCloning(selectedFile, voiceName);
+                                  if (
+                                    voiceName &&
+                                    (selectedFile || recordedAudio)
+                                  ) {
+                                    handleVoiceCloning(
+                                      selectedFile || recordedAudio!,
+                                      voiceName
+                                    );
                                   }
                                 }}
                               >
@@ -1016,7 +1168,7 @@ export default function TTSApp() {
                                     <input
                                       type="text"
                                       placeholder="Enter a name for your voice"
-                                      className="w-full p-2 bg-gray-900 border border-gray-700 rounded-md text-white"
+                                      className="w-full p-2 bg-gray-950/50 border border-gray-800/50 rounded-md text-gray-100 focus:border-indigo-500/50"
                                       value={voiceName}
                                       onChange={(e) =>
                                         setVoiceName(e.target.value)
@@ -1024,49 +1176,86 @@ export default function TTSApp() {
                                       required
                                     />
                                   </div>
-                                  <div className="space-y-2">
-                                    <label className="text-sm font-medium text-gray-300">
-                                      Voice Sample (MP4/Audio)
-                                    </label>
-                                    <div className="flex items-center space-x-2">
-                                      <input
-                                        type="file"
-                                        ref={fileInputRef}
-                                        accept="audio/*,video/mp4"
-                                        className="hidden"
-                                        onChange={(e) => {
-                                          const file = e.target.files?.[0];
-                                          if (file) {
-                                            setSelectedFile(file);
-                                          }
-                                        }}
-                                      />
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        onClick={() =>
-                                          fileInputRef.current?.click()
-                                        }
-                                        className="border-gray-700"
+
+                                  <Tabs
+                                    defaultValue="record"
+                                    className="w-full"
+                                  >
+                                    <TabsList className="grid w-full grid-cols-2 bg-gray-900/40">
+                                      <TabsTrigger
+                                        value="record"
+                                        className="data-[state=active]:bg-indigo-500/20 data-[state=active]:text-gray-300 "
                                       >
-                                        Choose File
-                                      </Button>
-                                      <span className="text-sm text-gray-400">
-                                        {selectedFile?.name ||
-                                          "No file selected"}
-                                      </span>
-                                    </div>
-                                    <p className="text-xs text-gray-500">
-                                      Supported formats: MP4, MP3, WAV, etc.
-                                      Maximum size: 10MB
-                                    </p>
-                                  </div>
+                                        Record Voice
+                                      </TabsTrigger>
+                                      <TabsTrigger
+                                        value="upload"
+                                        className="data-[state=active]:bg-indigo-500/20  data-[state=active]:text-gray-300"
+                                      >
+                                        Upload File
+                                      </TabsTrigger>
+                                    </TabsList>
+
+                                    <TabsContent
+                                      value="record"
+                                      className="mt-4"
+                                    >
+                                      {recordingUI}
+                                    </TabsContent>
+
+                                    <TabsContent
+                                      value="upload"
+                                      className="mt-4"
+                                    >
+                                      <div className="space-y-2">
+                                        <label className="text-sm font-medium text-gray-300">
+                                          Voice Sample (MP4/Audio)
+                                        </label>
+                                        <div className="flex items-center space-x-2">
+                                          <input
+                                            type="file"
+                                            ref={fileInputRef}
+                                            accept="audio/*,video/mp4"
+                                            multiple
+                                            className="hidden"
+                                            onChange={(e) => {
+                                             const files = Array.from(
+                                               e.target.files || []
+                                             );
+                                              if (files) {
+                                              setSelectedFile(files[0]);
+                                                resetRecording(); // Reset any recorded audio
+                                              }
+                                            }}
+                                          />
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={() =>
+                                              fileInputRef.current?.click()
+                                            }
+                                            className="border-gray-800/50 hover:bg-indigo-500/10 hover:text-indigo-300"
+                                          >
+                                            Choose File
+                                          </Button>
+                                          <span className="text-sm text-gray-400">
+                                            {selectedFile?.name ||
+                                              "No file selected"}
+                                          </span>
+                                        </div>
+                                        <p className="text-xs text-gray-500">
+                                          Supported formats: MP4, MP3, WAV, etc.
+                                          Maximum size: 10MB
+                                        </p>
+                                      </div>
+                                    </TabsContent>
+                                  </Tabs>
 
                                   {uploadProgress > 0 && (
                                     <div className="space-y-2">
-                                      <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                                      <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
                                         <div
-                                          className="h-full bg-blue-500 transition-all duration-300"
+                                          className="h-full bg-indigo-500 transition-all duration-300"
                                           style={{
                                             width: `${uploadProgress}%`,
                                           }}
@@ -1078,13 +1267,16 @@ export default function TTSApp() {
                                     </div>
                                   )}
                                 </div>
+
                                 <DialogFooter>
                                   <Button
                                     type="submit"
                                     disabled={
-                                      isCloning || !selectedFile || !voiceName
+                                      isCloning ||
+                                      !voiceName ||
+                                      (!selectedFile && !recordedAudio)
                                     }
-                                    className="bg-blue-500/20 hover:bg-blue-500/30 text-blue-400"
+                                    className="bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300"
                                   >
                                     {isCloning ? (
                                       <>

@@ -4,15 +4,24 @@ import { NextResponse } from "next/server";
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
-    const file = formData.get("file") as File;
+    const files = formData.getAll("files") as File[];
     const name = formData.get("name") as string;
 
-    if (!file || !name) {
+    if (!files || files.length === 0 || !name) {
       return NextResponse.json(
-        { error: "Missing required fields" },
+        { error: "You must upload at least one audio sample." },
         { status: 400 }
       );
     }
+
+    // Create a new FormData instance for the ElevenLabs API
+    const elevenLabsFormData = new FormData();
+    elevenLabsFormData.append("name", name);
+
+    // Append each file with the correct field name for ElevenLabs
+    files.forEach((file) => {
+      elevenLabsFormData.append("files", file);
+    });
 
     // Call ElevenLabs API
     const response = await fetch("https://api.elevenlabs.io/v1/voices/add", {
@@ -21,7 +30,7 @@ export async function POST(request: Request) {
         "xi-api-key": process.env.ELEVENLABS_API_KEY!,
         Accept: "application/json",
       },
-      body: formData,
+      body: elevenLabsFormData,
     });
 
     if (!response.ok) {
