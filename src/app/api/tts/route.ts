@@ -1,3 +1,4 @@
+// app/api/tts/route.ts
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
@@ -8,7 +9,15 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { text, voiceId, modelId = "eleven_monolingual_v1" } = body;
+    const {
+      text,
+      voiceId,
+      modelId = "eleven_multilingual_v2",
+      stability,
+      similarity_boost ,
+      style = 0,
+      use_speaker_boost = true,
+    } = body;
 
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
@@ -23,19 +32,21 @@ export async function POST(request: Request) {
           text,
           model_id: modelId,
           voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.5,
+            stability,
+            similarity_boost,
+            style,
+            use_speaker_boost,
           },
         }),
       }
     );
 
     if (!response.ok) {
-      throw new Error("Failed to generate speech");
+      const errorData = await response.json();
+      throw new Error(errorData.detail?.message || "Failed to generate speech");
     }
 
     const audioBuffer = await response.arrayBuffer();
-
     return new NextResponse(audioBuffer, {
       headers: {
         "Content-Type": "audio/mpeg",

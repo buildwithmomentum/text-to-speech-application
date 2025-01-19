@@ -24,6 +24,10 @@ import {
 } from "@/components/ui/dialog"
 import { exportAudioBlob } from '@/utils/audioUtils'
 import { useToast } from '@/hooks/use-toast'
+import { Switch } from '@/components/ui/switch'
+import HistoryComponent from '@/components/elevenlabs-history'
+import VoiceSelector from '@/components/voice-selector-component'
+import EnhancedVoiceSelector from '@/components/voice-selector-component'
 
 interface Voice {
   voice_id: string
@@ -41,15 +45,15 @@ interface AudioHistory {
 }
 
 interface VoicePreset {
-  id: string
-  name: string
-  voiceId: string
+  id: string;
+  name: string;
+  voiceId: string;
   settings: {
-    stability: number
-    similarity: number
-    speed: number
-    pitch: number
-  }
+    stability: number;
+    similarity: number;
+    style: number;
+    use_speaker_boost: boolean;
+  };
 }
 
 interface SavedAudio {
@@ -90,9 +94,11 @@ export default function TTSApp() {
   const [isMuted, setIsMuted] = useState(false);
   const [previousVolume, setPreviousVolume] = useState(volume);
   const [stability, setStability] = useState([0.5]);
-  const [similarity, setSimilarity] = useState([0.75]);
+  const [similarity, setSimilarity] = useState([0.70]);
   const [speed, setSpeed] = useState([1]);
   const [pitch, setPitch] = useState([0]);
+  const [style, setStyle] = useState([0]);
+  const [speakerBoost, setSpeakerBoost] = useState(true);
 
   // History and presets state
   const [audioHistory, setAudioHistory] = useState<AudioHistory[]>([]);
@@ -228,8 +234,8 @@ export default function TTSApp() {
       settings: {
         stability: stability[0],
         similarity: similarity[0],
-        speed: speed[0],
-        pitch: pitch[0],
+        style: style[0],
+        use_speaker_boost: speakerBoost,
       },
     };
     setPresets((prev) => [...prev, newPreset]);
@@ -248,8 +254,8 @@ export default function TTSApp() {
       setSelectedVoice(preset.voiceId);
       setStability([preset.settings.stability]);
       setSimilarity([preset.settings.similarity]);
-      setSpeed([preset.settings.speed]);
-      setPitch([preset.settings.pitch]);
+      setStyle([preset.settings.style]);
+      setSpeakerBoost(preset.settings.use_speaker_boost);
       setSelectedPreset(presetId);
       toast({
         title: "Preset Loaded",
@@ -299,90 +305,88 @@ export default function TTSApp() {
 
       initAudioContext();
 
-      const response = await fetch("/api/tts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text,
-          voiceId: selectedVoice,
-          stability: stability[0],
-          similarity: similarity[0],
-          speed: speed[0],
-          pitch: pitch[0],
-        }),
-      });
+    const response = await fetch("/api/tts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        text,
+        voiceId: selectedVoice,
+        stability: stability[0],
+        similarity_boost: similarity[0],
+        style: style[0],
+        use_speaker_boost: speakerBoost,
+      }),
+    });
 
-      if (!response.ok) {
-        throw new Error("Failed to generate speech");
+    if (!response.ok) {
+      throw new Error("Failed to generate speech");
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBlob = new Blob([arrayBuffer], { type: "audio/mpeg" });
+
+    // Save audio for export
+    setSavedAudio({
+      blob: audioBlob,
+      text,
+      voiceId: selectedVoice,
+      timestamp: new Date(),
+    });
+
+    // Add to history
+    const selectedVoiceData = voices.find((v) => v.voice_id === selectedVoice);
+    const newHistoryItem: AudioHistory = {
+      id: Date.now().toString(),
+      text,
+      voiceId: selectedVoice,
+      voiceName: selectedVoiceData?.name || "Unknown Voice",
+      timestamp: new Date(),
+      duration: estimatedDuration,
+    };
+
+    setAudioHistory((prev) => {
+      const newHistory = [newHistoryItem, ...prev].slice(0, 10);
+      return newHistory;
+    });
+
+    // Play the audio
+    if (audioContext && gainNode) {
+      if (sourceRef.current) {
+        sourceRef.current.stop();
+        sourceRef.current.disconnect();
       }
 
-      const arrayBuffer = await response.arrayBuffer();
-      const audioBlob = new Blob([arrayBuffer], { type: "audio/mpeg" });
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(gainNode);
+      sourceRef.current = source;
 
-      // Save audio for export
-      setSavedAudio({
-        blob: audioBlob,
-        text,
-        voiceId: selectedVoice,
-        timestamp: new Date(),
-      });
-
-      // Add to history
-      const selectedVoiceData = voices.find(
-        (v) => v.voice_id === selectedVoice
-      );
-      const newHistoryItem: AudioHistory = {
-        id: Date.now().toString(),
-        text,
-        voiceId: selectedVoice,
-        voiceName: selectedVoiceData?.name || "Unknown Voice",
-        timestamp: new Date(),
-        duration: estimatedDuration,
+      gainNode.gain.value = volume[0] / 100;
+      source.start(0);
+      source.onended = () => {
+        setIsPlaying(false);
+        sourceRef.current = null;
       };
 
-      setAudioHistory((prev) => {
-        const newHistory = [newHistoryItem, ...prev].slice(0, 10);
-        return newHistory;
-      });
-
-      // Play the audio
-      if (audioContext && gainNode) {
-        if (sourceRef.current) {
-          sourceRef.current.stop();
-          sourceRef.current.disconnect();
-        }
-
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(gainNode);
-        sourceRef.current = source;
-
-        gainNode.gain.value = volume[0] / 100;
-        source.start(0);
-        source.onended = () => {
-          setIsPlaying(false);
-          sourceRef.current = null;
-        };
-
-        toast({
-          title: "Success",
-          description: "Audio generated successfully!",
-        });
-      }
-    } catch (error) {
-      console.error("Error synthesizing speech:", error);
       toast({
-        title: "Error",
-        description: "Failed to generate speech. Please try again.",
-        variant: "destructive",
+        title: "Success",
+        description: "Audio generated successfully!",
       });
-      setIsPlaying(false);
-    } finally {
-      setIsLoading(false);
     }
+  } catch (error) {
+    console.error("Error synthesizing speech:", error);
+    toast({
+      title: "Error",
+      description: "Failed to generate speech. Please try again.",
+      variant: "destructive",
+    });
+    setIsPlaying(false);
+  } finally {
+    setIsLoading(false);
+  }
   };
 
   // Stop audio playback
@@ -413,6 +417,10 @@ export default function TTSApp() {
       title: "Success",
       description: "Audio file downloaded successfully",
     });
+  };
+
+  const handleVoicesUpdated = (updatedVoices: Voice[]) => {
+    setVoices(updatedVoices);
   };
 
   // Add these functions to handle recording
@@ -568,6 +576,38 @@ export default function TTSApp() {
     }
   };
 
+  const handleDeleteVoice = async (voiceId: string) => {
+    try {
+      const response = await fetch(`/api/clone-voice/${voiceId}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to delete voice");
+      }
+
+      // Update voices list
+      setVoices(voices.filter((voice) => voice.voice_id !== voiceId));
+
+      // If the deleted voice was selected, reset selection
+      if (selectedVoice === voiceId) {
+        setSelectedVoice("");
+      }
+
+      toast({
+        title: "Success",
+        description: "Voice deleted successfully",
+      });
+    } catch (error) {
+      console.error("Error deleting voice:", error);
+      toast({
+        title: "Error",
+        description: "Failed to delete voice. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleVoiceChange = (voiceId: string) => {
     console.log("Selected Voice ID:", voiceId);
     console.log("Is Valid Voice ID?", Boolean(voiceId));
@@ -660,7 +700,7 @@ export default function TTSApp() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-800 to-black text-white py-8 ">
-      <div className="container mx-auto px-4 mt-20">
+      <div className="container mx-auto px-4 ">
         {/* Hero Section */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold mb-4 bg-clip-text text-transparent bg-gradient-to-r from-violet-400 via-fuchsia-500 to-indigo-500">
@@ -749,31 +789,20 @@ export default function TTSApp() {
                   {/* Voice Controls */}
                   <div className="space-y-6">
                     {/* Voice Selection and Presets */}
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-gray-300">
+                    <div className="grid grid-cols-1 gap-4">
+                      <div className="space-y-2 ">
+                        {/* <label className="text-sm font-medium text-gray-300">
                           Voice
-                        </label>
-                        <Select
-                          value={selectedVoice}
-                          onValueChange={handleVoiceChange}
-                          disabled={isLoadingVoices || isLoading || isPlaying}
-                        >
-                          <SelectTrigger className="bg-gray-950/50 border-gray-800/50 text-gray-400 [&>span]:text-gray-400 placeholder:text-gray-500">
-                            <SelectValue placeholder="Select a voice" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-gray-900 border-gray-800">
-                            {voices.map((voice) => (
-                              <SelectItem
-                                key={voice.voice_id}
-                                value={voice.voice_id}
-                                className="text-gray-100 hover:bg-indigo-500/20"
-                              >
-                                {voice.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        </label> */}
+                        <EnhancedVoiceSelector
+                          voices={voices}
+                          selectedVoice={selectedVoice}
+                          onVoiceChange={handleVoiceChange}
+                          onDeleteVoice={handleDeleteVoice}
+                          isLoading={isLoadingVoices}
+                          isDisabled={isLoading || isPlaying}
+                          onVoicesUpdated={handleVoicesUpdated}
+                        />
                       </div>
 
                       <div className="space-y-2">
@@ -806,56 +835,88 @@ export default function TTSApp() {
                     <div className="grid grid-cols-2 gap-6">
                       <div className="space-y-4">
                         <div className="space-y-2">
-                          <label className="text-sm font-medium text-gray-300">
-                            Stability
-                          </label>
+                          <div className="flex justify-between items-center">
+                            <label className="text-sm font-medium text-gray-300">
+                              Stability
+                            </label>
+                            <span className="text-xs text-gray-500">
+                              {stability[0].toFixed(2)}
+                            </span>
+                          </div>
                           <Slider
                             value={stability}
                             onValueChange={setStability}
+                            min={0}
                             max={1}
                             step={0.01}
                             className="w-full"
                           />
+                          <p className="text-xs text-gray-500">
+                            Higher values make voice more consistent but can
+                            reduce expressiveness
+                          </p>
                         </div>
+
                         <div className="space-y-2">
-                          <label className="text-sm font-medium text-gray-300">
-                            Similarity
-                          </label>
+                          <div className="flex justify-between items-center">
+                            <label className="text-sm font-medium text-gray-300">
+                              Similarity Boost
+                            </label>
+                            <span className="text-xs text-gray-500">
+                              {similarity[0].toFixed(2)}
+                            </span>
+                          </div>
                           <Slider
                             value={similarity}
                             onValueChange={setSimilarity}
+                            min={0}
                             max={1}
                             step={0.01}
                             className="w-full"
                           />
+                          <p className="text-xs text-gray-500">
+                            Higher values make voice more similar to original
+                            but can reduce quality
+                          </p>
                         </div>
                       </div>
 
                       <div className="space-y-4">
                         <div className="space-y-2">
-                          <label className="text-sm font-medium text-gray-300">
-                            Speed
-                          </label>
+                          <div className="flex justify-between items-center">
+                            <label className="text-sm font-medium text-gray-300">
+                              Style
+                            </label>
+                            <span className="text-xs text-gray-500">
+                              {style[0].toFixed(2)}
+                            </span>
+                          </div>
                           <Slider
-                            value={speed}
-                            onValueChange={setSpeed}
-                            min={0.5}
-                            max={2}
-                            step={0.1}
+                            value={style}
+                            onValueChange={setStyle}
+                            min={0}
+                            max={1}
+                            step={0.01}
                             className="w-full"
                           />
+                          <p className="text-xs text-gray-500">
+                            Control speaking style intensity
+                          </p>
                         </div>
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium text-gray-300">
-                            Pitch
-                          </label>
-                          <Slider
-                            value={pitch}
-                            onValueChange={setPitch}
-                            min={-20}
-                            max={20}
-                            step={1}
-                            className="w-full"
+
+                        <div className="flex items-center justify-between space-x-4 mt-4">
+                          <div>
+                            <label className="text-sm font-medium text-gray-300">
+                              Speaker Boost
+                            </label>
+                            <p className="text-xs text-gray-500">
+                              Enhance voice clarity and reduce distortion
+                            </p>
+                          </div>
+                          <Switch
+                            checked={speakerBoost}
+                            onCheckedChange={setSpeakerBoost}
+                            className="data-[state=checked]:bg-indigo-500"
                           />
                         </div>
                       </div>
@@ -1003,62 +1064,12 @@ export default function TTSApp() {
             <TabsContent value="history">
               <Card className="bg-gray-800/50 backdrop-blur-lg border-gray-700">
                 <CardContent className="p-6">
-                  <div className="space-y-4">
-                    <div className="flex justify-between items-center">
-                      <h3 className="text-lg font-medium text-gray-300">
-                        Recent Generations
-                      </h3>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setAudioHistory([])}
-                        className="border-gray-700 hover:bg-white/80"
-                      >
-                        Clear History
-                      </Button>
-                    </div>
-
-                    {audioHistory.length === 0 ? (
-                      <div className="text-center py-8 text-gray-400">
-                        <History className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                        <p>No generation history yet</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        {audioHistory.map((item) => (
-                          <div
-                            key={item.id}
-                            className="bg-gray-900/50 p-4 rounded-lg border border-gray-700"
-                          >
-                            <div className="flex justify-between items-start mb-2">
-                              <div className="flex-1">
-                                <p className="text-sm text-gray-300 line-clamp-2">
-                                  {item.text}
-                                </p>
-                                <p className="text-xs text-gray-500 mt-1">
-                                  {item.voiceName} • {item.duration}s
-                                </p>
-                              </div>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="text-gray-400 hover:border"
-                                onClick={() => {
-                                  setText(item.text);
-                                  setSelectedVoice(item.voiceId);
-                                }}
-                              >
-                                <RotateCcw className="h-4 w-4" />
-                              </Button>
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              {new Date(item.timestamp).toLocaleString()}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <HistoryComponent
+                    onSelectText={(text, voiceId) => {
+                      setText(text);
+                      setSelectedVoice(voiceId);
+                    }}
+                  />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -1101,8 +1112,11 @@ export default function TTSApp() {
                               <div className="space-y-1 text-sm text-gray-400">
                                 <p>Stability: {preset.settings.stability}</p>
                                 <p>Similarity: {preset.settings.similarity}</p>
-                                <p>Speed: {preset.settings.speed}x</p>
-                                <p>Pitch: {preset.settings.pitch}</p>
+                                <p>Style: {preset.settings.style}</p>
+                                <p>
+                                  User Boost:{" "}
+                                  {preset.settings.use_speaker_boost}
+                                </p>
                               </div>
                             </div>
                           ))}
@@ -1219,11 +1233,11 @@ export default function TTSApp() {
                                             multiple
                                             className="hidden"
                                             onChange={(e) => {
-                                             const files = Array.from(
-                                               e.target.files || []
-                                             );
+                                              const files = Array.from(
+                                                e.target.files || []
+                                              );
                                               if (files) {
-                                              setSelectedFile(files[0]);
+                                                setSelectedFile(files[0]);
                                                 resetRecording(); // Reset any recorded audio
                                               }
                                             }}
